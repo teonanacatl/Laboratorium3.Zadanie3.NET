@@ -1,58 +1,93 @@
-﻿using System.Diagnostics;
+﻿using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 
 namespace Laboratorium3.Zadanie3.NET
 {
-    public class Program
+    public static class Program
     {
+        private static volatile bool _found;
+        private static readonly ConcurrentBag<string> Results = new();
+        private static readonly object LockObj = new();
+        private static Stopwatch _stopwatch = new();
+
         public static void Main()
         {
-            const string cipherTextHex = "23c73dde8faedd91413fb5dd1d7e066d70425ed1e058d0e2f7e9e43501824a95446baf28f6ce7ffd3c544f40efb5c80f235de1321214328781a6ea0c0c4c7b74be3968ca1ffb8455";
+            const string cipherTextHex =
+                "23c73dde8faedd91413fb5dd1d7e066d70425ed1e058d0e2f7e9e43501824a95446baf28f6ce7ffd3c544f40efb5c80f235de1321214328781a6ea0c0c4c7b74be3968ca1ffb8455";
             var cipherTextBytes = StringToByteArray(cipherTextHex);
-            var stopwatch = Stopwatch.StartNew();
+            _stopwatch.Start();
 
             var key = new byte[8];
-            for (var i = 0; i < 4; i++) 
+            for (var i = 0; i < 4; i++)
                 key[4 + i] = 5;
 
-            Parallel.For(0, 256, i =>
+            var parallelOptions = new ParallelOptions
             {
-                for (var j = 0; j <= 255; j++)
+                MaxDegreeOfParallelism = Environment.ProcessorCount
+            };
+
+            Parallel.For(0, 256, parallelOptions, (i, state) =>
+            {
+                if (_found)
                 {
-                    for (var k = 0; k <= 255; k++)
+                    state.Stop();
+                    return;
+                }
+
+                using var des = DES.Create();
+                des.Mode = CipherMode.ECB;
+                des.Padding = PaddingMode.PKCS7;
+
+                for (var j = 0; j <= 255 && !_found; j++)
+                {
+                    for (var k = 0; k <= 255 && !_found; k++)
                     {
-                        for (var l = 0; l <= 255; l++)
+                        for (var l = 0; l <= 255 && !_found; l++)
                         {
                             key[0] = (byte)i;
                             key[1] = (byte)j;
                             key[2] = (byte)k;
                             key[3] = (byte)l;
+                            des.Key = key;
 
-                            var decryptedText = Decrypt(cipherTextBytes, key);
+                            var decryptedText = Decrypt(cipherTextBytes, des);
                             if (!string.IsNullOrEmpty(decryptedText) && decryptedText.StartsWith("test"))
                             {
-                                Console.WriteLine($"Znaleziono klucz: {ByteArrayToString(key)}");
-                                Console.WriteLine($"Tekst jawny: {decryptedText}");
-                                stopwatch.Stop();
-                                Console.WriteLine($"Czas wykonania: {stopwatch.Elapsed.TotalSeconds} sekund");
+                                lock (LockObj)
+                                {
+                                    if (_found) return;
+                                    _found = true;
+                                    Results.Add($"Znaleziono klucz: {ByteArrayToString(key)}");
+                                    Results.Add($"Tekst jawny: {decryptedText}");
+                                    state.Stop();
+                                }
+
                                 return;
                             }
+
+                            LogProgress(key);
                         }
                     }
                 }
             });
 
-            Console.WriteLine("Nie znaleziono klucza.");
+            _stopwatch.Stop();
+
+            if (_found)
+            {
+                foreach (var result in Results) Console.WriteLine(result);
+                Console.WriteLine($"Czas wykonania: {_stopwatch.Elapsed.TotalSeconds} sekund");
+            }
+            else
+            {
+                Console.WriteLine("Nie znaleziono klucza.");
+            }
         }
 
-        private static string Decrypt(byte[] cipherTextBytes, byte[] key)
+        private static string Decrypt(byte[] cipherTextBytes, SymmetricAlgorithm des)
         {
-            using var des = new DESCryptoServiceProvider();
-            des.Key = key;
-            des.Mode = CipherMode.ECB;
-            des.Padding = PaddingMode.PKCS7;
-
             var decryptor = des.CreateDecryptor(des.Key, des.IV);
             try
             {
@@ -80,6 +115,16 @@ namespace Laboratorium3.Zadanie3.NET
             foreach (var b in bytes)
                 hex.Append($"{b:x2}");
             return hex.ToString();
+        }
+
+        private static void LogProgress(byte[] key)
+        {
+            if (_stopwatch.Elapsed.TotalMinutes >= 1)
+            {
+                Console.WriteLine(
+                    $"Elapsed Time: {_stopwatch.Elapsed.TotalMinutes:F2} minutes, Checking Key: {ByteArrayToString(key)}");
+                _stopwatch.Restart();
+            }
         }
     }
 }
