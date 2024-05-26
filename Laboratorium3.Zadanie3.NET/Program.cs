@@ -7,78 +7,72 @@ namespace Laboratorium3.Zadanie3.NET
 {
     public static class Program
     {
-        private static volatile bool _found;
+        private static int _found;
         private static readonly ConcurrentBag<string> Results = new();
-        private static readonly object LockObj = new();
-        private static Stopwatch _stopwatch = new();
+        private static readonly Stopwatch Stopwatch = new();
 
         public static void Main()
         {
             const string cipherTextHex =
                 "23c73dde8faedd91413fb5dd1d7e066d70425ed1e058d0e2f7e9e43501824a95446baf28f6ce7ffd3c544f40efb5c80f235de1321214328781a6ea0c0c4c7b74be3968ca1ffb8455";
             var cipherTextBytes = StringToByteArray(cipherTextHex);
-            _stopwatch.Start();
-
-            var key = new byte[8];
-            for (var i = 0; i < 4; i++)
-                key[4 + i] = 5;
+            Stopwatch.Start();
 
             var parallelOptions = new ParallelOptions
             {
                 MaxDegreeOfParallelism = Environment.ProcessorCount
             };
 
-            Parallel.For(0, 256, parallelOptions, (i, state) =>
+            Parallel.For(0, 256, parallelOptions, i =>
             {
-                if (_found)
+                if (Interlocked.CompareExchange(ref _found, 1, 1) == 1)
                 {
-                    state.Stop();
                     return;
                 }
+
+                var key = new byte[8];
+                for (var x = 0; x < 4; x++)
+                    key[4 + x] = 5;
+                key[0] = (byte)i;
 
                 using var des = DES.Create();
                 des.Mode = CipherMode.ECB;
                 des.Padding = PaddingMode.PKCS7;
 
-                for (var j = 0; j <= 255 && !_found; j++)
+                for (var j = 0; j <= 255 && Interlocked.CompareExchange(ref _found, 1, 1) != 1; j++)
                 {
-                    for (var k = 0; k <= 255 && !_found; k++)
+                    key[1] = (byte)j;
+
+                    for (var k = 0; k <= 255 && Interlocked.CompareExchange(ref _found, 1, 1) != 1; k++)
                     {
-                        for (var l = 0; l <= 255 && !_found; l++)
+                        key[2] = (byte)k;
+
+                        for (var l = 0; l <= 255 && Interlocked.CompareExchange(ref _found, 1, 1) != 1; l++)
                         {
-                            key[0] = (byte)i;
-                            key[1] = (byte)j;
-                            key[2] = (byte)k;
                             key[3] = (byte)l;
                             des.Key = key;
 
                             var decryptedText = Decrypt(cipherTextBytes, des);
                             if (!string.IsNullOrEmpty(decryptedText) && decryptedText.StartsWith("test"))
                             {
-                                lock (LockObj)
+                                if (Interlocked.CompareExchange(ref _found, 1, 0) == 0)
                                 {
-                                    if (_found) return;
-                                    _found = true;
                                     Results.Add($"Znaleziono klucz: {ByteArrayToString(key)}");
                                     Results.Add($"Tekst jawny: {decryptedText}");
-                                    state.Stop();
                                 }
-
                                 return;
                             }
-
-                            LogProgress(key);
                         }
                     }
                 }
             });
 
-            _stopwatch.Stop();
+            Stopwatch.Stop();
 
-            if (_found)
+            if (_found == 1)
             {
                 foreach (var result in Results) Console.WriteLine(result);
-                Console.WriteLine($"Czas wykonania: {_stopwatch.Elapsed.TotalSeconds} sekund");
+                Console.WriteLine($"Czas wykonania: {Stopwatch.Elapsed.TotalSeconds} sekund");
             }
             else
             {
@@ -88,9 +82,9 @@ namespace Laboratorium3.Zadanie3.NET
 
         private static string Decrypt(byte[] cipherTextBytes, SymmetricAlgorithm des)
         {
-            var decryptor = des.CreateDecryptor(des.Key, des.IV);
             try
             {
+                var decryptor = des.CreateDecryptor(des.Key, des.IV);
                 var plainTextBytes = decryptor.TransformFinalBlock(cipherTextBytes, 0, cipherTextBytes.Length);
                 return Encoding.ASCII.GetString(plainTextBytes);
             }
@@ -115,16 +109,6 @@ namespace Laboratorium3.Zadanie3.NET
             foreach (var b in bytes)
                 hex.Append($"{b:x2}");
             return hex.ToString();
-        }
-
-        private static void LogProgress(byte[] key)
-        {
-            if (_stopwatch.Elapsed.TotalMinutes >= 1)
-            {
-                Console.WriteLine(
-                    $"Elapsed Time: {_stopwatch.Elapsed.TotalMinutes:F2} minutes, Checking Key: {ByteArrayToString(key)}");
-                _stopwatch.Restart();
-            }
         }
     }
 }
